@@ -87,7 +87,7 @@ class SharedProcessWorkerProcess extends Disposable {
 			}
 
 			if (code !== 0 && signal !== 'SIGTERM') {
-				Logger.error(`Crashed with exit code ${code} and signal ${signal}`);
+				Logger.error(`Child process crashed with exit code ${code} and signal ${signal}`);
 			}
 		});
 
@@ -100,7 +100,7 @@ class SharedProcessWorkerProcess extends Disposable {
 
 			// Handle remote console logs specially
 			if (isRemoteConsoleLog(msg)) {
-				log(msg, `SharedProcess [worker]: `);
+				log(msg, `SharedProcess worker`);
 			}
 
 			// Anything else goes to the outside
@@ -123,15 +123,13 @@ class SharedProcessWorkerProcess extends Disposable {
 
 		// Re-emit messages from the process via the port
 		const onMessage = onMessageEmitter.event;
-		onMessage(buffer => this.port.postMessage(buffer));
+		onMessage(message => this.port.postMessage(message.buffer));
 
 		// Relay message from the port into the process
 		this.port.onmessage = (e => send(VSBuffer.wrap(e.data)));
 	}
 
 	private getEnv(): NodeJS.ProcessEnv {
-
-		// Build environment
 		const env: NodeJS.ProcessEnv = {
 			...deepClone(process.env),
 			VSCODE_AMD_ENTRYPOINT: this.configuration.process.moduleId,
@@ -140,6 +138,7 @@ class SharedProcessWorkerProcess extends Disposable {
 			VSCODE_PARENT_PID: String(process.pid)
 		};
 
+		// Sanitize environment
 		removeDangerousEnvVariables(env);
 
 		return env;

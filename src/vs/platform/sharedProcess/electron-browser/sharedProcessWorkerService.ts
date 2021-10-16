@@ -27,8 +27,6 @@ export class SharedProcessWorkerService implements ISharedProcessWorkerService {
 		// `workerPort`: send into a new worker to use
 		const { port1: windowPort, port2: workerPort } = new MessageChannel();
 
-		// TODO@bpasero what is the lifecycle of workers?
-		// Should probably dispose on port close event?
 		const worker = new Worker('../../../base/worker/workerMain.js', {
 			name: `Shared Process Worker (${workerLogId})`
 		});
