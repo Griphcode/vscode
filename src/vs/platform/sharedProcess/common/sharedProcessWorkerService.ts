@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { hash as hashObject } from 'vs/base/common/hash';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
 
 export interface ISharedProcessWorkerProcess {
@@ -37,6 +38,13 @@ export interface ISharedProcessWorkerConfiguration {
 	};
 }
 
+export function hash(configuration: ISharedProcessWorkerConfiguration): number {
+	const configurationCopy: ISharedProcessWorkerConfiguration = { ...configuration };
+	configurationCopy.reply.nonce = ''; // do not include in hash key
+
+	return hashObject(configurationCopy);
+}
+
 export const ISharedProcessWorkerService = createDecorator<ISharedProcessWorkerService>('sharedProcessWorkerService');
 
 export const ipcSharedProcessWorkerChannelName = 'sharedProcessWorker';
@@ -46,10 +54,18 @@ export interface ISharedProcessWorkerService {
 	readonly _serviceBrand: undefined;
 
 	/**
-	 * Forks the provided process from the passed in configuration inside
+	 * Create a new worker from the passed in configuration inside
 	 * the shared process and establishes a `MessagePort` communication
 	 * channel that is being sent back to via the `reply` options of the
 	 * configuration.
+	 *
+	 * Clients have to call `disposeWorker` to free up the associated
+	 * resources when done using the worker.
 	 */
 	createWorker(configuration: ISharedProcessWorkerConfiguration): Promise<void>;
+
+	/**
+	 * Free up the worker for the provided configuration.
+	 */
+	disposeWorker(configuration: ISharedProcessWorkerConfiguration): Promise<void>;
 }

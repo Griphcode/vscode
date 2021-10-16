@@ -11,7 +11,7 @@ import { Event, Emitter } from 'vs/base/common/event';
 import { Disposable } from 'vs/base/common/lifecycle';
 import { deepClone } from 'vs/base/common/objects';
 import { removeDangerousEnvVariables } from 'vs/base/node/processes';
-import { ISharedProcessWorkerConfiguration } from 'vs/platform/sharedProcess/common/sharedProcessWorkerService';
+import { hash, ISharedProcessWorkerConfiguration } from 'vs/platform/sharedProcess/common/sharedProcessWorkerService';
 import { SharedProcessWorkerMessages, ISharedProcessToWorkerMessage, ISharedProcessWorkerEnvironment } from 'vs/platform/sharedProcess/electron-browser/sharedProcessWorker';
 
 /**
@@ -19,38 +19,84 @@ import { SharedProcessWorkerMessages, ISharedProcessToWorkerMessage, ISharedProc
  * we are loaded via the `vs/base/worker/workerMain` utility.
  */
 export function create(): { onmessage: (message: ISharedProcessToWorkerMessage, transfer: Transferable[]) => void } {
+	const sharedProcessWorkerMain = new SharedProcessWorkerMain();
 
-	// Ask to receive the message channel port & config
-	postMessage({ id: SharedProcessWorkerMessages.RequestPort });
-
-	// Return a message handler that awaits port and config
 	return {
-		onmessage: (message, transfer) => {
-			switch (message.id) {
-				case SharedProcessWorkerMessages.ReceivePort:
-					if (transfer[0] instanceof MessagePort) {
-						Logger.trace('Received the message port and configuration');
-
-						try {
-
-							// Spawn a new worker process with given configuration
-							const workerProcess = new SharedProcessWorkerProcess(transfer[0], message.configuration, message.environment);
-							workerProcess.spawn();
-
-							// Indicate we are ready
-							Logger.trace('Worker is ready');
-							postMessage({ id: SharedProcessWorkerMessages.WorkerReady });
-						} catch (error) {
-							Logger.error(`Unexpected error forking worker process: ${toErrorMessage(error)}`);
-						}
-					}
-					break;
-
-				default:
-					Logger.warn(`Unexpected message '${message}'`);
-			}
-		}
+		onmessage: (message, transfer) => sharedProcessWorkerMain.notifyMessage(message, transfer)
 	};
+}
+
+class SharedProcessWorkerMain {
+
+	private readonly mapConfigurationToProcess = new Map<number, SharedProcessWorkerProcess>();
+
+	constructor() {
+		this.init();
+	}
+
+	private init(): void {
+
+		// Ask to receive the message channel port & config
+		postMessage({ id: SharedProcessWorkerMessages.RequestPort });
+	}
+
+	notifyMessage(message: ISharedProcessToWorkerMessage, transfer: Transferable[]): void {
+		switch (message.id) {
+			case SharedProcessWorkerMessages.ReceivePort:
+				if (transfer[0] instanceof MessagePort && message.environment) {
+					this.onReceivePort(transfer[0], message.configuration, message.environment);
+				}
+				break;
+
+			case SharedProcessWorkerMessages.WorkerTerminate:
+				this.onTerminate(message.configuration);
+				break;
+
+			default:
+				Logger.warn(`Unexpected message '${message}'`);
+		}
+	}
+
+	private onReceivePort(port: MessagePort, configuration: ISharedProcessWorkerConfiguration, environment: ISharedProcessWorkerEnvironment): void {
+		Logger.trace('Received the message port and configuration');
+
+		try {
+
+			// Ensure to terminate any existing process for config
+			this.terminate(configuration);
+
+			// Spawn a new worker process with given configuration
+			const process = new SharedProcessWorkerProcess(port, configuration, environment);
+			process.spawn();
+
+			// Remember in map for lifecycle
+			this.mapConfigurationToProcess.set(hash(configuration), process);
+
+			// Indicate we are ready
+			Logger.trace('Worker is ready');
+			postMessage({ id: SharedProcessWorkerMessages.WorkerReady });
+		} catch (error) {
+			Logger.error(`Unexpected error forking worker process: ${toErrorMessage(error)}`);
+		}
+	}
+
+	private onTerminate(configuration: ISharedProcessWorkerConfiguration): void {
+		this.terminate(configuration);
+	}
+
+	private terminate(configuration: ISharedProcessWorkerConfiguration): void {
+		const configurationHash = hash(configuration);
+		const process = this.mapConfigurationToProcess.get(configurationHash);
+		if (process) {
+			Logger.trace('Terminating worker process');
+
+			process.dispose();
+
+			this.mapConfigurationToProcess.delete(configurationHash);
+
+			close();
+		}
+	}
 }
 
 class SharedProcessWorkerProcess extends Disposable {

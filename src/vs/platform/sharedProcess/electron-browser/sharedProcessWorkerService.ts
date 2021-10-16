@@ -4,14 +4,17 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { ipcRenderer } from 'electron';
+import { IDisposable, toDisposable } from 'vs/base/common/lifecycle';
 import { FileAccess } from 'vs/base/common/network';
 import { ILogService } from 'vs/platform/log/common/log';
-import { ISharedProcessWorkerConfiguration, ISharedProcessWorkerService } from 'vs/platform/sharedProcess/common/sharedProcessWorkerService';
+import { hash, ISharedProcessWorkerConfiguration, ISharedProcessWorkerService } from 'vs/platform/sharedProcess/common/sharedProcessWorkerService';
 import { SharedProcessWorkerMessages, ISharedProcessToWorkerMessage, IWorkerToSharedProcessMessage } from 'vs/platform/sharedProcess/electron-browser/sharedProcessWorker';
 
 export class SharedProcessWorkerService implements ISharedProcessWorkerService {
 
 	declare readonly _serviceBrand: undefined;
+
+	private readonly mapConfigurationToWorkerDisposable = new Map<number, IDisposable>();
 
 	constructor(
 		@ILogService private readonly logService: ILogService
@@ -22,10 +25,8 @@ export class SharedProcessWorkerService implements ISharedProcessWorkerService {
 		const workerLogId = `window: ${configuration.reply.windowId}, moduleId: ${configuration.process.moduleId}`;
 		this.logService.trace(`SharedProcess: createWorker (${workerLogId})`);
 
-		// Create a `MessageChannel` with 2 ports:
-		// `windowPort`: send back to the requesting window
-		// `workerPort`: send into a new worker to use
-		const { port1: windowPort, port2: workerPort } = new MessageChannel();
+		// Ensure to dispose any existing worker for config
+		this.disposeWorker(configuration);
 
 		const worker = new Worker('../../../base/worker/workerMain.js', {
 			name: `Shared Process Worker (${workerLogId})`
@@ -38,6 +39,11 @@ export class SharedProcessWorkerService implements ISharedProcessWorkerService {
 		worker.onmessageerror = event => {
 			this.logService.error(`SharedProcess: worker message error (${workerLogId})`, event);
 		};
+
+		// Create a `MessageChannel` with 2 ports:
+		// `windowPort`: send back to the requesting window
+		// `workerPort`: send into a new worker to use
+		const { port1: windowPort, port2: workerPort } = new MessageChannel();
 
 		worker.onmessage = event => {
 			const { id, message } = event.data as IWorkerToSharedProcessMessage;
@@ -89,5 +95,32 @@ export class SharedProcessWorkerService implements ISharedProcessWorkerService {
 
 		// First message triggers the load of the worker
 		worker.postMessage('vs/platform/sharedProcess/electron-browser/sharedProcessWorkerMain');
+
+		// Remember in map for lifecycle
+		this.mapConfigurationToWorkerDisposable.set(hash(configuration), toDisposable(() => {
+
+			// Terminate worker (via message to give chance to kill processes within)
+			const workerMessage: ISharedProcessToWorkerMessage = {
+				id: SharedProcessWorkerMessages.WorkerTerminate,
+				configuration
+			};
+			worker.postMessage(workerMessage);
+
+			// Close ports
+			windowPort.close();
+			workerPort.close();
+		}));
+	}
+
+	async disposeWorker(configuration: ISharedProcessWorkerConfiguration): Promise<void> {
+		const configurationHash = hash(configuration);
+		const worker = this.mapConfigurationToWorkerDisposable.get(configurationHash);
+		if (worker) {
+			this.logService.trace(`SharedProcess: disposeWorker (window: ${configuration.reply.windowId}, moduleId: ${configuration.process.moduleId})`);
+
+			worker.dispose();
+
+			this.mapConfigurationToWorkerDisposable.delete(configurationHash);
+		}
 	}
 }
